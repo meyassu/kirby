@@ -2,12 +2,14 @@
 TODO:
 - get src/dest IP
 - add other types of attacks to tag_to_ix (if needed)
-- implement IPC
+- implement IPC (run will be communicating directly with socket)
 - add stopping condition based on validation 
+- decide whether or not to use transfer learning
 """
 
 import torch
 import torch.nn as nn
+import torchvision.models as models
 import torch.optim as optim
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
@@ -19,16 +21,16 @@ import os
 Constants
 """
 DATA_DIR = "data/"
-PCKT_DIM = 222
+PCKT_DIM = 224
 
 """
-Set neural network device
+Set model device
 """
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using {device} device")
 
 """
-Set neural network hyperparameters
+Set model hyperparameters
 """
 torch.manual_seed(42)
 BATCH_SIZE = 64
@@ -179,25 +181,14 @@ def load_checkpoint(checkpoint_fpath, model, optimizer):
 	optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 	return model, optimizer, checkpoint["epoch"]
 
-
-class NeuralNetwork(nn.Module):
+class Model():
 	def __init__(self):
-		super(NeuralNetwork, self).__init__()
-		self.flatten = nn.Flatten()
-		self.linear_relu_stack = nn.Sequential(
-	    	nn.Linear(28*28, 512),
-	    	nn.ReLU(),
-	    	nn.Linear(512, 512),
-	    	nn.ReLU(),
-	    	nn.Linear(512, 10),
-		)
+		self.model = models.DenseNet(pretrained=False)
+		f_conv_layer = [nn.Conv2d(1, 3, kernel_size=3, stride=1, padding=1, dilation=1, groups=1, bias=True)]
+		f_conv_layer.extend(list(self.model.features))
+		self.model.features = nn.Sequential(*f_conv_layer)
 
-	def forward(self, x):
-		x = self.flatten(x)
-		logits = self.linear_relu_stack(x)
-		return logits
-
-def train(model, optimizer, data_fname, model_fpath):
+def train(model, optimizer, data_fname):
 	"""
 	Trains the model and saves it.
 
@@ -222,9 +213,9 @@ def train(model, optimizer, data_fname, model_fpath):
 	for epoch in range(MAX_EPOCHS):
 		print(f"Starting epoch {epoch}...")
 		for flow_batch, tags in train_loader:
-			# setup model, hardware
+			# clean gradient memory, setup hardware
 			model.zero_grad()
-			flow_batch, tags = batch.to(device), labels.to(device)
+			flow_batch, tags = flow_batch.to(device), tags.to(device)
 			
 			# forward prop
 			tag_scores = model(flow_batch)
@@ -242,22 +233,33 @@ def train(model, optimizer, data_fname, model_fpath):
 	}
 	torch.save(model, "model/model.pt")
 
+def infer(model, data_fname):
+	"""
+	This function cannot be written without figuring out IPC
+	"""
+# 	model.eval()
 
-def run(model, data):
+# 	# load data
+# 	train_params = {"batch_size": BATCH_SIZE,
+# 					"shuffle": SHUFFLE,
+# 					"num_workers": NUM_WORKERS
+# 				   }
+# 	test_data = Dataset(data_fname)
+# 	test_loader = DataLoader(test_data, **params)
 
+# 	ix_to_tags = {0: "Normal", 1: "Infiltrating_Transfer"}
+# 	# perform inference
+# 	inferences = []
+# 	with torch.no_grad():
+# 		for flow_batch, tags in test_loader:
+# 			flow_batch = flow_batch.to(device)
+# 			tag_scores = model(flow_batch).numpy()
+# 			output = [np.argmax(t_s) for t_s in tag_scores]
+# 			flows.append((flow_batch, output))
+
+#	# The model will only enter eval() mode during testing, otherwise its always in training mode
+#	model.train()
 	
-
-	# # construct network flow
-	# # start/end indices for port fields
-	# src_port_start, src_port_end = 0, 16
-	# dest_port_start, dest_port_end = 17, 32
-
-	# src_ip, dest_ip = None, None
-	# f_packet = pckts[0]
-	# src_port = int(f_packet[src_port_start:src_port_end+1], 2)
-	# dest_port = int(f_packet[dest_port_start:dest_port_end+1], 2)
-	# flow = NetworkFlow(datum["packets"], src_ip, dest_ip, src_port, dest_port)
-
 	pass
 
 
