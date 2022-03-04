@@ -1,6 +1,9 @@
 """
 TODO:
 - get src/dest IP
+- add other types of attacks to tag_to_ix (if needed)
+- implement IPC
+- add stopping condition based on validation 
 """
 
 import torch
@@ -12,20 +15,26 @@ import numpy as np
 import json
 import os
 
-# Constants
+"""
+Constants
+"""
 DATA_DIR = "data/"
+PCKT_DIM = 222
 
-# Set device for neural net
+"""
+Set neural network device
+"""
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using {device} device")
 
-# Hyperparameters
+"""
+Set neural network hyperparameters
+"""
 torch.manual_seed(42)
 BATCH_SIZE = 64
 SHUFFLE = True
 NUM_WORKERS = 6
 MAX_EPOCHS = 100
-
 
 """
 The following classes and functions are concerned with data ingestion.
@@ -37,6 +46,7 @@ class NetworkFlowDataset(Dataset):
 		pass data_fpath=train.json if train or test.json if test
 		"""
 		self.fname = os.path.join(DATA_DIR, fname)
+		self.transform = transform
 
 		def __len__(self):
 			"""
@@ -76,20 +86,44 @@ class NetworkFlowDataset(Dataset):
 			"""
 
 			# read data
-			with open(self.data_fpath, "r") as infile:
+			with open(self.fname, "r") as infile:
 				data = json.load(infile)
-			data = data[fname.split("/")[1].split(".")[0]]
+			data = data[self.fname.split("/")[1].split(".")[0]]
 			datum = data[idx]
-			pckts = np.asarray(datum["packets"])
-			# use mapping here
-			
-			# get tag
-			if "train" in self.data_fpath:
-				tag = datum["Tag"]
+			pckts = datum["packets"]
+			pckts = np.asarray([bin_to_list(p) for p in pckts])
+			# normalize pckts
+			if len(pckts) > PCKT_DIM:
+				pckts = pckts[0:MAX_PCKTS+1]
+			elif len(pckts) < PCKT_DIM:
+				pckts = np.pad(pckts, ((0, PCKT_DIM - len(pckts)), (0,0)), mode="constant", constant_values=(0,))
+			pckts = torch.from_numpy(pckts)
+
+			# represent tag as one-hot vectors
+			tags_to_ix = {"Normal": 0, "Infiltrating_Transfer": 1}
+			if "train" in self.fname:
+				ix = tags_to_ix[datum["Tag"]]
+				tag = [0 for i in range(len(tags_to_ix))]
+				tag[ix] = 1
+				tag = torch.tensor(tag)
 			else:
 				tag = None
 
 			return pckts, tag
+
+def _bin_to_list(bin):
+	"""
+	Given a binary sequence stored a string, "b_0b_1b_2...b_n" returns a list
+	where each element is a bit b_i. The resulting list is projected from [0,1]
+	range to [0,255]. 
+
+	:param bin: (str) -> the binary sequence
+
+	:return: (list) -> a list of ints
+	"""
+
+	return [int(b)*255 for b in bin]
+
 
 """
 The following classes and functions are concered with model training and inference.
@@ -116,6 +150,36 @@ class NetworkFlow():
 		self.src_port = src_port
 		self.dest_port = dest_port
 
+
+def save_checkpoint(checkpoint, is_best, checkpoint_fpath, best_model_fpath):
+    """
+	Saves checkpoint
+	:param checkpoint: (dict) -> a dictionary storing the state of a model
+	:param is_best: (bool) -> enables special storage of the best model
+	:param checkpoint_dir: (str) -> the target directory for the checkpoint
+	:param best_model_dir: (str) -> the target directory for the model
+    """
+
+    torch.save(checkpoint, checkpoint_fpath)
+    if is_best:
+        shutil.copyfile(checkpoint_fpath, best_model_fpath)
+
+
+def load_checkpoint(checkpoint_fpath, model, optimizer):
+	
+	checkpoint = torch.load(checkpoint_fpath)
+	model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+	optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+	return model, optimizer, checkpoint["epoch"]
+
+def load_checkpoint(checkpoint_fpath, model, optimizer):
+	
+	checkpoint = torch.load(checkpoint_fpath)
+	model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+	optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+	return model, optimizer, checkpoint["epoch"]
+
+
 class NeuralNetwork(nn.Module):
 	def __init__(self):
 		super(NeuralNetwork, self).__init__()
@@ -133,11 +197,9 @@ class NeuralNetwork(nn.Module):
 		logits = self.linear_relu_stack(x)
 		return logits
 
-
-
 def train(model, optimizer, data_fname, model_fpath):
 	"""
-	Trains the model.
+	Trains the model and saves it.
 
 	:param model: (torch.nn) -> the model
 	:param optimizer: (torch.optim) -> the optimizer
@@ -146,8 +208,8 @@ def train(model, optimizer, data_fname, model_fpath):
 	"""
 
 	# load data
-	train_params = {"batch_size:" BATCH_SIZE,
-					"shuffle": SHUFFLE
+	train_params = {"batch_size": BATCH_SIZE,
+					"shuffle": SHUFFLE,
 					"num_workers": NUM_WORKERS
 				   }
 	
@@ -159,37 +221,26 @@ def train(model, optimizer, data_fname, model_fpath):
 	loss_function = nn.NLLLoss()
 	for epoch in range(MAX_EPOCHS):
 		print(f"Starting epoch {epoch}...")
-		for batch, labels, in train_loader:
+		for flow_batch, tags in train_loader:
+			# setup model, hardware
 			model.zero_grad()
-			# transfer to GPU
-			batch, labels = batch.to(device), labels.to(device)
-
-		for sentence, tags in training_data:
-			model.zero_grad()
-
-			# Step 2. Get our inputs ready for the network, that is, turn them into
-			# Tensors of word indices.
-			# Eventually I suggest you use the DataLoader modules
-			# The batching can take place here
-			sentence_in = prepare_sequence(sentence, word_to_ix)
-			targets = prepare_sequence(tags, tag_to_ix)
-
-			# Step 3. Run our forward pass.
-			tag_scores = model(sentence_in)
-
-			# Step 4. Compute the loss, gradients, and update the parameters by
-			#  calling optimizer.step()
-			loss = loss_function(tag_scores, targets)
+			flow_batch, tags = batch.to(device), labels.to(device)
+			
+			# forward prop
+			tag_scores = model(flow_batch)
+			
+			# backprop
+			loss = loss_function(tag_scores, tags)
 			loss.backward()
 			optimizer.step()
 
 	# Save model
-	checkpoint = {
+	model = {
 		"epoch": epoch + 1,
 		"model_state_dict": model.state_dict(),
 		"optimizer_state_dict": optimizer.state_dict()
 	}
-	save_checkpoint(checkpoint=checkpoint, is_best=False, checkpoint_fpath=checkpoint_fpath, best_model_fpath=best_model_fpath)
+	torch.save(model, "model/model.pt")
 
 
 def run(model, data):
@@ -206,6 +257,8 @@ def run(model, data):
 	# src_port = int(f_packet[src_port_start:src_port_end+1], 2)
 	# dest_port = int(f_packet[dest_port_start:dest_port_end+1], 2)
 	# flow = NetworkFlow(datum["packets"], src_ip, dest_ip, src_port, dest_port)
+
+	pass
 
 
 """
