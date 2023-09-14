@@ -1,21 +1,40 @@
-from scapy.all import sniff, IP
+from scapy.all import sniff, IP, TCP, UDP
+import ipaddress
 
 # Global variables
 n = 10  # Dimensions for our 2D array (10x10)
 current_2d_array = []  # Current 2D array that's being filled
 packets_3d_array = []  # 3D array containing filled 2D arrays
 
+def ip_to_binary(ip):
+    """
+    Convert an IP address to its binary representation.
+    """
+    return format(int(ipaddress.ip_address(ip)), '032b')
+
+def protocol_to_binary(proto):
+    """
+    Convert a protocol number to its binary representation.
+    """
+    return format(proto, '08b')
+
 def preprocess_packet(packet):
     """
-    Extract necessary information from a packet for attack detection.
-    This function currently extracts source IP, destination IP, and the protocol.
+    Extract necessary information from a packet for attack detection, in binary format.
     """
+    binary_representation = []
+
     if IP in packet:
-        src_ip = packet[IP].src
-        dst_ip = packet[IP].dst
-        protocol = packet[IP].proto
-        return [src_ip, dst_ip, protocol]
-    return []
+        src_ip_binary = ip_to_binary(packet[IP].src)
+        dst_ip_binary = ip_to_binary(packet[IP].dst)
+        
+        binary_representation.extend([src_ip_binary, dst_ip_binary])
+
+        if TCP in packet or UDP in packet:
+            proto = protocol_to_binary(packet[IP].proto)
+            binary_representation.append(proto)
+
+    return binary_representation
 
 def packet_callback(packet):
     """
@@ -26,11 +45,13 @@ def packet_callback(packet):
     processed_data = preprocess_packet(packet)
     
     if processed_data:
-        current_2d_array.append(processed_data)
+        current_2d_array.extend(processed_data)
     
     # If the current 2D array is full
     if len(current_2d_array) >= n * n:
-        packets_3d_array.append(current_2d_array)
+        # Reshape to nxn
+        square_2d_array = [current_2d_array[i:i+n] for i in range(0, n*n, n)]
+        packets_3d_array.append(square_2d_array)
         current_2d_array = []
 
 if __name__ == "__main__":
@@ -38,7 +59,7 @@ if __name__ == "__main__":
     # Continuously capture packets
     sniff(prn=packet_callback)
 
-    # If you want to view the packets in 3D array
+    # For visualization or debugging purposes
     # for block in packets_3d_array:
     #     for row in block:
     #         print(row)
