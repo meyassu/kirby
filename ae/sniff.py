@@ -1,30 +1,45 @@
 from scapy.all import sniff, IP
 
-def packet_callback(packet):
-    # Check if the packet has the IP layer
+# Global variables
+n = 10  # Dimensions for our 2D array (10x10)
+current_2d_array = []  # Current 2D array that's being filled
+packets_3d_array = []  # 3D array containing filled 2D arrays
+
+def preprocess_packet(packet):
+    """
+    Extract necessary information from a packet for attack detection.
+    This function currently extracts source IP, destination IP, and the protocol.
+    """
     if IP in packet:
         src_ip = packet[IP].src
-        if src_ip not in packets_dict:
-            packets_dict[src_ip] = []
+        dst_ip = packet[IP].dst
+        protocol = packet[IP].proto
+        return [src_ip, dst_ip, protocol]
+    return []
 
-        # Append the packet summary (or the whole packet if needed) to the list for the source IP
-        packets_dict[src_ip].append(packet.summary())
+def packet_callback(packet):
+    """
+    Callback function to handle incoming packets.
+    Organizes packets into 2D arrays, and pushes filled 2D arrays into a 3D array.
+    """
+    global current_2d_array
+    processed_data = preprocess_packet(packet)
+    
+    if processed_data:
+        current_2d_array.append(processed_data)
+    
+    # If the current 2D array is full
+    if len(current_2d_array) >= n * n:
+        packets_3d_array.append(current_2d_array)
+        current_2d_array = []
 
 if __name__ == "__main__":
-    packets_dict = {}
-    
     print("Starting packet capture...")
-    # Capture 50 packets for demo purposes (you can adjust this number as needed)
-    sniff(count=50, prn=packet_callback)
+    # Continuously capture packets
+    sniff(prn=packet_callback)
 
-    # Convert dictionary to 2D array
-    packets_2d_array = []
-    for src_ip, packets in packets_dict.items():
-        packets_2d_array.append([src_ip] + packets)
-
-    # Print the 2D array
-    for block in packets_2d_array:
-        print("Source IP:", block[0])
-        for pkt in block[1:]:
-            print("\t", pkt)
-        print("-----------------------")
+    # If you want to view the packets in 3D array
+    # for block in packets_3d_array:
+    #     for row in block:
+    #         print(row)
+    #     print("-----------------------")
